@@ -23,7 +23,7 @@ from storage import (
 
 # ---------------------------------------------------------------- A1
 def calc_end_date(start, duration_days, freeze_days_total):
-    """A1. Дата окончания = старт + срок тарифа + суммарные дни заморозок.
+    """A1. Исключающая граница срока: start + duration_days + freeze_days_total.
 
     Сложность O(1) по заранее накопленной сумме дней заморозки.
     """
@@ -130,12 +130,12 @@ def check_access(state, card_code, zone_id, when):
     day = when.date()
     if sub["status"] == STATUS_TERMINATED:
         return False, "абонемент расторгнут"
-    if sub["status"] == STATUS_PENDING:  # активация по 1-му визиту
-        activate(state, sub_id, day)
-    if day > sub["end"]:
-        sub["status"] = STATUS_EXPIRED
+    pending = sub["status"] == STATUS_PENDING
+    start = day if pending else sub["start"]
+    end = calc_end_date(day, tariff["duration_days"], 0) if pending else sub["end"]
+    if sub["status"] == STATUS_EXPIRED or day >= end:
         return False, "срок действия истёк"
-    if day < sub["start"]:
+    if day < start:
         return False, "срок действия ещё не начался"
     if is_frozen_on(sub, day):
         return False, "абонемент заморожен"
@@ -151,6 +151,8 @@ def check_access(state, card_code, zone_id, when):
         return False, "есть задолженность"
     if card_code in state["open_visits"]:
         return False, "по карте уже пройдено (повторный вход)"
+    if pending:
+        activate(state, sub_id, day)
     visit = {
         "id": next_id(state, "visit"),
         "sub_id": sub_id,
@@ -191,10 +193,12 @@ def freeze_subscription(state, sub_id, date_from, days, request_day):
         return False, "число дней должно быть положительным"
     if date_from < request_day:
         return False, "нельзя заморозить за прошедшие дни"
+    if not sub["start"] <= date_from < sub["end"]:
+        return False, "начало заморозки вне срока абонемента"
     if sub["freeze_days_used"] + days > tariff["max_freeze_days"]:
         return False, "превышен лимит дней заморозки"
     date_to = date_from + timedelta(days=days)
-    for old_from, old_to in sub["freezes"]:  # пересечение отрезков
+    for old_from, old_to in sub["freezes"]:  # пересечение полуинтервалов
         if date_from < old_to and old_from < date_to:
             return False, "период пересекается с прежней заморозкой"
     sub["freezes"].append((date_from, date_to))
